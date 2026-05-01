@@ -226,6 +226,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Trickle ICE candidate forwarding
+  socket.on('ice_candidate', (data) => {
+    // data: { to: username, signal: any } OR { toSocketId: socketId, signal: any }
+    if (data.toSocketId) {
+      // Forward directly to a socket ID (receiver -> caller)
+      io.to(data.toSocketId).emit('ice_candidate', { signal: data.signal });
+    } else if (data.to) {
+      // Forward by username (caller -> receiver)
+      const recipientSockets = userToSockets.get(data.to);
+      if (recipientSockets && recipientSockets.size > 0) {
+        const socketId = Array.from(recipientSockets)[0];
+        io.to(socketId).emit('ice_candidate', { signal: data.signal });
+      }
+    }
+  });
+
   socket.on('disconnect', () => {
     const username = socketToUser.get(socket.id);
     if (username) {

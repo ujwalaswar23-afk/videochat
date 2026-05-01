@@ -3,13 +3,57 @@ import Peer from 'simple-peer';
 import { socket } from '../socket';
 import { Video, PhoneOff, Mic, MicOff, VideoOff } from 'lucide-react';
 
-const ICE_SERVERS = {
+// ICE servers for NAT traversal - includes free TURN servers for better connectivity
+const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    // Free TURN servers for relay when direct connection fails
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
   ]
+};
+
+// HD Video constraints
+const HD_VIDEO_CONSTRAINTS = {
+  video: {
+    width: { ideal: 1920, min: 1280 },
+    height: { ideal: 1080, min: 720 },
+    frameRate: { ideal: 30, min: 24 },
+    facingMode: 'user'
+  },
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    sampleRate: 48000
+  }
+};
+
+// Fallback for devices that can't do HD
+const SD_VIDEO_CONSTRAINTS = {
+  video: {
+    width: { ideal: 1280, min: 640 },
+    height: { ideal: 720, min: 480 },
+    frameRate: { ideal: 30 },
+    facingMode: 'user'
+  },
+  audio: {
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  }
 };
 
 const VideoCall = ({ username }) => {
@@ -43,7 +87,7 @@ const VideoCall = ({ username }) => {
       console.log('Call accepted, signaling peer');
       setCallAccepted(true);
       setIsCalling(false);
-      setRemoteSocketId(data.fromId); // Now we know the answerer's socket ID
+      setRemoteSocketId(data.fromId);
       if (connectionRef.current && !connectionRef.current.destroyed) {
         connectionRef.current.signal(data.signal);
       }
@@ -59,6 +103,13 @@ const VideoCall = ({ username }) => {
       cleanupCall();
     };
 
+    // Handle trickle ICE candidates from remote
+    const onIceCandidate = (data) => {
+      if (connectionRef.current && !connectionRef.current.destroyed) {
+        connectionRef.current.signal(data.signal);
+      }
+    };
+
     const onInitiateCall = (e) => {
       const { userToCall, name, type } = e.detail;
       initiateCall(userToCall, name, type === 'video');
@@ -68,6 +119,7 @@ const VideoCall = ({ username }) => {
     socket.on('call_accepted', onCallAccepted);
     socket.on('call_ended', onCallEnded);
     socket.on('call_rejected', onCallRejected);
+    socket.on('ice_candidate', onIceCandidate);
     window.addEventListener('initiate_call', onInitiateCall);
 
     return () => {
@@ -75,6 +127,7 @@ const VideoCall = ({ username }) => {
       socket.off('call_accepted', onCallAccepted);
       socket.off('call_ended', onCallEnded);
       socket.off('call_rejected', onCallRejected);
+      socket.off('ice_candidate', onIceCandidate);
       window.removeEventListener('initiate_call', onInitiateCall);
     };
   }, []);
@@ -86,22 +139,75 @@ const VideoCall = ({ username }) => {
     }
   }, [stream]);
 
-  // ---- Get camera/mic ----
+  // ---- Get HD camera/mic ----
   const getMediaStream = async (withVideo) => {
+    if (!withVideo) {
+      // Audio only call
+      try {
+        const s = await navigator.mediaDevices.getUserMedia({
+          video: false,
+          audio: HD_VIDEO_CONSTRAINTS.audio
+        });
+        setStream(s);
+        streamRef.current = s;
+        setIsVideoEnabled(false);
+        return s;
+      } catch (err) {
+        console.error('Failed to get audio', err);
+        alert('Microphone access denied.');
+        return null;
+      }
+    }
+
+    // Try HD first, fall back to SD
     try {
-      const s = await navigator.mediaDevices.getUserMedia({
-        video: withVideo,
-        audio: true
-      });
+      const s = await navigator.mediaDevices.getUserMedia(HD_VIDEO_CONSTRAINTS);
+      console.log('Got HD stream:', s.getVideoTracks()[0].getSettings());
       setStream(s);
       streamRef.current = s;
-      setIsVideoEnabled(withVideo);
+      setIsVideoEnabled(true);
       return s;
     } catch (err) {
-      console.error('Failed to get media', err);
-      alert('Camera/microphone access denied. Please allow permissions and try again.');
-      return null;
+      console.warn('HD not available, trying SD...', err);
+      try {
+        const s = await navigator.mediaDevices.getUserMedia(SD_VIDEO_CONSTRAINTS);
+        console.log('Got SD stream:', s.getVideoTracks()[0].getSettings());
+        setStream(s);
+        streamRef.current = s;
+        setIsVideoEnabled(true);
+        return s;
+      } catch (err2) {
+        console.error('Failed to get any video', err2);
+        alert('Camera/microphone access denied. Please allow permissions and try again.');
+        return null;
+      }
     }
+  };
+
+  // ---- Create a peer with optimized settings ----
+  const createPeer = (initiator, mediaStream) => {
+    const peer = new Peer({
+      initiator,
+      trickle: true, // Enable trickle ICE for faster connection
+      stream: mediaStream,
+      config: ICE_CONFIG,
+      // SDP transform to prefer high bitrate
+      sdpTransform: (sdp) => {
+        // Increase video bitrate to 4 Mbps for HD
+        sdp = sdp.replace(/b=AS:\d+/g, 'b=AS:4000');
+        // If no bandwidth line exists, add it after video m-line
+        if (!sdp.includes('b=AS:')) {
+          sdp = sdp.replace(/m=video (.*)\r\n/, 'm=video $1\r\nb=AS:4000\r\n');
+        }
+        return sdp;
+      }
+    });
+
+    peer.on('error', (err) => {
+      console.error('Peer error:', err);
+    });
+
+    return peer;
   };
 
   // ---- Caller side: initiate a call ----
@@ -112,28 +218,27 @@ const VideoCall = ({ username }) => {
     setIsCalling(true);
     setCallerName(name);
 
-    const peer = new Peer({
-      initiator: true,
-      trickle: false,
-      stream: mediaStream,
-      config: ICE_SERVERS
-    });
+    const peer = createPeer(true, mediaStream);
 
     peer.on('signal', (signalData) => {
-      socket.emit('call_user', {
-        userToCall: targetUsername,
-        signalData,
-        from: username,
-      });
+      if (signalData.type === 'offer') {
+        socket.emit('call_user', {
+          userToCall: targetUsername,
+          signalData,
+          from: username,
+        });
+      } else {
+        // Trickle ICE candidate
+        socket.emit('ice_candidate', {
+          to: targetUsername,
+          signal: signalData,
+        });
+      }
     });
 
     peer.on('stream', (remoteStream) => {
       console.log('Received remote stream (caller side)');
       attachRemoteStream(remoteStream);
-    });
-
-    peer.on('error', (err) => {
-      console.error('Peer error (caller):', err);
     });
 
     connectionRef.current = peer;
@@ -147,24 +252,23 @@ const VideoCall = ({ username }) => {
     const mediaStream = await getMediaStream(true);
     if (!mediaStream) return;
 
-    const peer = new Peer({
-      initiator: false,
-      trickle: false,
-      stream: mediaStream,
-      config: ICE_SERVERS
-    });
+    const peer = createPeer(false, mediaStream);
 
     peer.on('signal', (signalData) => {
-      socket.emit('answer_call', { signal: signalData, to: remoteSocketId });
+      if (signalData.type === 'answer') {
+        socket.emit('answer_call', { signal: signalData, to: remoteSocketId });
+      } else {
+        // Trickle ICE candidate
+        socket.emit('ice_candidate', {
+          toSocketId: remoteSocketId,
+          signal: signalData,
+        });
+      }
     });
 
     peer.on('stream', (remoteStream) => {
       console.log('Received remote stream (receiver side)');
       attachRemoteStream(remoteStream);
-    });
-
-    peer.on('error', (err) => {
-      console.error('Peer error (receiver):', err);
     });
 
     peer.signal(callerSignal);
@@ -173,7 +277,6 @@ const VideoCall = ({ username }) => {
 
   // ---- Helper: attach remote stream to video element ----
   const attachRemoteStream = (remoteStream) => {
-    // Try immediately, then retry after a short delay to handle race conditions
     const attach = () => {
       if (userVideo.current) {
         userVideo.current.srcObject = remoteStream;
