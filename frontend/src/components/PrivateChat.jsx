@@ -57,9 +57,11 @@ const PrivateChat = ({ username }) => {
 
     if (socket.connected) {
       socket.emit('login', { username });
+      socket.emit('get_all_users');
     } else {
       socket.once('connect', () => {
         socket.emit('login', { username });
+        socket.emit('get_all_users');
       });
     }
 

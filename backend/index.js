@@ -70,9 +70,15 @@ const emitAllUsers = () => {
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
-  // Send the list of all registered users immediately so World Chat guests can see it if needed
+  // Send the list of all registered users immediately
   socket.emit('all_users', Object.keys(registeredUsers));
   emitOnlineUsers();
+
+  // Allow clients to request user list anytime
+  socket.on('get_all_users', () => {
+    socket.emit('all_users', Object.keys(registeredUsers));
+    emitOnlineUsers();
+  });
 
   // ---- Registration & Authentication ----
   socket.on('register', ({ username, password }, callback) => {
