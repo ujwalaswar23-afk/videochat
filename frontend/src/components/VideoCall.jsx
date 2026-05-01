@@ -3,14 +3,12 @@ import Peer from 'simple-peer';
 import { socket } from '../socket';
 import { Video, PhoneOff, Mic, MicOff, VideoOff } from 'lucide-react';
 
-// ICE servers with TURN relay for better connectivity
 const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
     {
       urls: 'turn:openrelay.metered.ca:80',
       username: 'openrelayproject',
@@ -24,42 +22,22 @@ const ICE_CONFIG = {
   ]
 };
 
-// HD Video constraints - tries 1080p, falls back to 720p
-const getVideoConstraints = (withVideo) => {
-  if (!withVideo) {
-    return { video: false, audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } };
-  }
-  return {
-    video: {
-      width: { ideal: 1920, min: 640 },
-      height: { ideal: 1080, min: 480 },
-      frameRate: { ideal: 30, min: 15 },
-      facingMode: 'user'
-    },
-    audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true
-    }
-  };
-};
-
 const VideoCall = ({ username }) => {
-  const [stream, setStream] = useState(null);
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
   const [receivingCall, setReceivingCall] = useState(false);
   const [remoteSocketId, setRemoteSocketId] = useState('');
   const [callerName, setCallerName] = useState('');
   const [callerSignal, setCallerSignal] = useState(null);
   const [callAccepted, setCallAccepted] = useState(false);
   const [isCalling, setIsCalling] = useState(false);
-
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
 
   const myVideo = useRef(null);
   const userVideo = useRef(null);
   const connectionRef = useRef(null);
-  const streamRef = useRef(null);
+  const localStreamRef = useRef(null);
 
   // ---- Socket listeners ----
   useEffect(() => {
@@ -79,14 +57,8 @@ const VideoCall = ({ username }) => {
       }
     };
 
-    const onCallEnded = () => {
-      cleanupCall();
-    };
-
-    const onCallRejected = (data) => {
-      alert(data.reason || 'Call could not be connected');
-      cleanupCall();
-    };
+    const onCallEnded = () => cleanupCall();
+    const onCallRejected = (data) => { alert(data.reason || 'Call failed'); cleanupCall(); };
 
     const onInitiateCall = (e) => {
       const { userToCall, name, type } = e.detail;
@@ -108,32 +80,41 @@ const VideoCall = ({ username }) => {
     };
   }, []);
 
-  // Attach local stream to video element
+  // ---- Attach LOCAL stream to video element ----
   useEffect(() => {
-    if (stream && myVideo.current) {
-      myVideo.current.srcObject = stream;
+    if (localStream && myVideo.current) {
+      myVideo.current.srcObject = localStream;
     }
-  }, [stream]);
+  }, [localStream]);
 
-  // ---- Get HD camera ----
+  // ---- Attach REMOTE stream to video element ----
+  useEffect(() => {
+    if (remoteStream && userVideo.current) {
+      userVideo.current.srcObject = remoteStream;
+    }
+  }, [remoteStream, callAccepted]);
+
+  // ---- Get camera ----
   const getMediaStream = async (withVideo) => {
+    const constraints = withVideo
+      ? {
+          video: { width: { ideal: 1920, min: 640 }, height: { ideal: 1080, min: 480 }, frameRate: { ideal: 30 }, facingMode: 'user' },
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        }
+      : { video: false, audio: { echoCancellation: true, noiseSuppression: true } };
+
     try {
-      const s = await navigator.mediaDevices.getUserMedia(getVideoConstraints(withVideo));
-      if (withVideo) {
-        const settings = s.getVideoTracks()[0]?.getSettings();
-        console.log(`Camera resolution: ${settings?.width}x${settings?.height}`);
-      }
-      setStream(s);
-      streamRef.current = s;
+      const s = await navigator.mediaDevices.getUserMedia(constraints);
+      setLocalStream(s);
+      localStreamRef.current = s;
       setIsVideoEnabled(withVideo);
       return s;
     } catch (err) {
-      console.error('Failed to get media', err);
-      // Try basic fallback
+      console.warn('HD failed, trying basic...', err);
       try {
         const s = await navigator.mediaDevices.getUserMedia({ video: withVideo, audio: true });
-        setStream(s);
-        streamRef.current = s;
+        setLocalStream(s);
+        localStreamRef.current = s;
         setIsVideoEnabled(withVideo);
         return s;
       } catch (err2) {
@@ -157,7 +138,6 @@ const VideoCall = ({ username }) => {
       stream: mediaStream,
       config: ICE_CONFIG,
       sdpTransform: (sdp) => {
-        // Boost video bitrate to 4 Mbps for HD quality
         sdp = sdp.replace(/b=AS:\d+/g, 'b=AS:4000');
         if (!sdp.includes('b=AS:')) {
           sdp = sdp.replace(/m=video (.*)\r\n/, 'm=video $1\r\nb=AS:4000\r\n');
@@ -174,15 +154,12 @@ const VideoCall = ({ username }) => {
       });
     });
 
-    peer.on('stream', (remoteStream) => {
-      console.log('Got remote stream from callee');
-      if (userVideo.current) {
-        userVideo.current.srcObject = remoteStream;
-      }
+    peer.on('stream', (stream) => {
+      console.log('Caller received remote stream');
+      setRemoteStream(stream);
     });
 
     peer.on('error', (err) => console.error('Peer error:', err));
-
     connectionRef.current = peer;
   };
 
@@ -212,11 +189,9 @@ const VideoCall = ({ username }) => {
       socket.emit('answer_call', { signal: signalData, to: remoteSocketId });
     });
 
-    peer.on('stream', (remoteStream) => {
-      console.log('Got remote stream from caller');
-      if (userVideo.current) {
-        userVideo.current.srcObject = remoteStream;
-      }
+    peer.on('stream', (stream) => {
+      console.log('Receiver received remote stream');
+      setRemoteStream(stream);
     });
 
     peer.on('error', (err) => console.error('Peer error:', err));
@@ -227,15 +202,10 @@ const VideoCall = ({ username }) => {
 
   // ---- Cleanup ----
   const cleanupCall = () => {
-    if (connectionRef.current) {
-      connectionRef.current.destroy();
-      connectionRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-    setStream(null);
+    if (connectionRef.current) { connectionRef.current.destroy(); connectionRef.current = null; }
+    if (localStreamRef.current) { localStreamRef.current.getTracks().forEach((t) => t.stop()); localStreamRef.current = null; }
+    setLocalStream(null);
+    setRemoteStream(null);
     setCallAccepted(false);
     setReceivingCall(false);
     setIsCalling(false);
@@ -245,23 +215,21 @@ const VideoCall = ({ username }) => {
   };
 
   const leaveCall = () => {
-    if (remoteSocketId) {
-      socket.emit('end_call', { to: remoteSocketId });
-    }
+    if (remoteSocketId) socket.emit('end_call', { to: remoteSocketId });
     cleanupCall();
   };
 
   const toggleVideo = () => {
-    if (streamRef.current) {
-      const track = streamRef.current.getVideoTracks()[0];
-      if (track) { track.enabled = !track.enabled; setIsVideoEnabled(track.enabled); }
+    if (localStreamRef.current) {
+      const t = localStreamRef.current.getVideoTracks()[0];
+      if (t) { t.enabled = !t.enabled; setIsVideoEnabled(t.enabled); }
     }
   };
 
   const toggleAudio = () => {
-    if (streamRef.current) {
-      const track = streamRef.current.getAudioTracks()[0];
-      if (track) { track.enabled = !track.enabled; setIsAudioEnabled(track.enabled); }
+    if (localStreamRef.current) {
+      const t = localStreamRef.current.getAudioTracks()[0];
+      if (t) { t.enabled = !t.enabled; setIsAudioEnabled(t.enabled); }
     }
   };
 
@@ -269,7 +237,6 @@ const VideoCall = ({ username }) => {
 
   return (
     <>
-      {/* Incoming Call Modal */}
       {receivingCall && !callAccepted && (
         <div className="incoming-call-modal animate-fade-in">
           <div className="incoming-header">
@@ -280,17 +247,12 @@ const VideoCall = ({ username }) => {
             </div>
           </div>
           <div className="incoming-actions">
-            <button className="btn btn-primary" onClick={answerCall}>
-              <Video size={18} /> Answer
-            </button>
-            <button className="btn btn-danger" onClick={leaveCall}>
-              <PhoneOff size={18} /> Decline
-            </button>
+            <button className="btn btn-primary" onClick={answerCall}><Video size={18} /> Answer</button>
+            <button className="btn btn-danger" onClick={leaveCall}><PhoneOff size={18} /> Decline</button>
           </div>
         </div>
       )}
 
-      {/* Video Call Overlay */}
       {(callAccepted || isCalling) && (
         <div className="video-overlay animate-fade-in">
           <div style={{ padding: '20px', textAlign: 'center' }}>
@@ -299,22 +261,24 @@ const VideoCall = ({ username }) => {
 
           <div className="video-grid">
             <div className="video-container">
-              {stream ? (
+              {localStream ? (
                 <video playsInline muted ref={myVideo} autoPlay />
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-                  Loading camera...
-                </div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>Loading camera...</div>
               )}
               <div className="video-label">You</div>
             </div>
 
-            {callAccepted && (
-              <div className="video-container">
+            <div className="video-container">
+              {remoteStream ? (
                 <video playsInline ref={userVideo} autoPlay />
-                <div className="video-label">{callerName}</div>
-              </div>
-            )}
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
+                  {isCalling ? 'Waiting for answer...' : 'Connecting...'}
+                </div>
+              )}
+              <div className="video-label">{callerName || 'Remote'}</div>
+            </div>
           </div>
 
           <div className="call-controls">
@@ -324,9 +288,7 @@ const VideoCall = ({ username }) => {
             <button className="call-btn" style={{ background: isVideoEnabled ? 'rgba(255,255,255,0.2)' : 'var(--accent-danger)', color: 'white' }} onClick={toggleVideo}>
               {isVideoEnabled ? <Video /> : <VideoOff />}
             </button>
-            <button className="call-btn end" onClick={leaveCall}>
-              <PhoneOff />
-            </button>
+            <button className="call-btn end" onClick={leaveCall}><PhoneOff /></button>
           </div>
         </div>
       )}
