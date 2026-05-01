@@ -397,6 +397,7 @@
   /* Chat header */
   .chat-header {
     padding: 12px 16px;
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
   }
 
   .chat-header h3 {
@@ -430,6 +431,15 @@
   }
 
   /* Video call overlay */
+  .video-overlay {
+    padding-top: calc(20px + env(safe-area-inset-top, 20px));
+    padding-bottom: env(safe-area-inset-bottom, 16px);
+  }
+
+  .video-overlay h2 {
+    font-size: 1.2rem;
+  }
+
   .video-grid {
     flex-direction: column;
     padding: 10px;
@@ -443,6 +453,7 @@
 
   .call-controls {
     padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 16px));
     gap: 16px;
   }
 
@@ -453,7 +464,7 @@
 
   /* Incoming call modal */
   .incoming-call-modal {
-    top: 16px;
+    top: calc(16px + env(safe-area-inset-top, 20px));
     right: 16px;
     left: 16px;
     min-width: auto;
