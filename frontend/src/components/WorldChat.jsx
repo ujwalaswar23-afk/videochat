@@ -40,7 +40,10 @@ const WorldChat = ({ username }) => {
   const sendMessage = (e) => {
     e.preventDefault();
     if (inputValue.trim()) {
-      socket.emit('world_message', { sender: username, content: inputValue, type: 'text' });
+      const msg = { sender: username, content: inputValue, type: 'text' };
+      // Optimistic update — server no longer echoes back to sender
+      setMessages((prev) => [...prev, { ...msg, msgType: 'text', timestamp: Date.now() }]);
+      socket.emit('world_message', msg);
       setInputValue('');
     }
   };
@@ -50,7 +53,9 @@ const WorldChat = ({ username }) => {
     if (file) {
       const reader = new FileReader();
       reader.onload = (event) => {
-        socket.emit('world_message', { sender: username, content: event.target.result, type: 'image' });
+        const msg = { sender: username, content: event.target.result, type: 'image' };
+        setMessages((prev) => [...prev, { ...msg, msgType: 'image', timestamp: Date.now() }]);
+        socket.emit('world_message', msg);
       };
       reader.readAsDataURL(file);
     }

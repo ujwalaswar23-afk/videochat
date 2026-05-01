@@ -164,7 +164,8 @@ io.on('connection', (socket) => {
       timestamp: Date.now()
     };
     chatHistory.push(message);
-    io.to('world_chat').emit('world_message', message);
+    // Broadcast to all in room EXCEPT sender (sender handles optimistically)
+    socket.to('world_chat').emit('world_message', message);
   });
 
   // ---- Private Chat ----
