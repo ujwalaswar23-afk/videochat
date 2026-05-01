@@ -198,6 +198,7 @@ io.on('connection', (socket) => {
 
   // ---- WebRTC Signaling ----
   socket.on('call_user', (data) => {
+    // data: { userToCall: username, signalData: any, from: username }
     const recipientSockets = userToSockets.get(data.userToCall);
     if (recipientSockets && recipientSockets.size > 0) {
       const socketId = Array.from(recipientSockets)[0];
@@ -206,15 +207,23 @@ io.on('connection', (socket) => {
         from: data.from,
         fromId: socket.id
       });
+    } else {
+      // User is offline, notify the caller
+      socket.emit('call_rejected', { reason: 'User is offline' });
     }
   });
 
   socket.on('answer_call', (data) => {
-    io.to(data.to).emit('call_accepted', data.signal);
+    // data: { to: socketId, signal: any }
+    // Include the answerer's socket ID so the caller can track them
+    io.to(data.to).emit('call_accepted', { signal: data.signal, fromId: socket.id });
   });
 
   socket.on('end_call', (data) => {
-    io.to(data.to).emit('call_ended');
+    // data: { to: socketId }
+    if (data.to) {
+      io.to(data.to).emit('call_ended');
+    }
   });
 
   socket.on('disconnect', () => {
