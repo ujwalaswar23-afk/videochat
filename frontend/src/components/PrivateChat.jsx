@@ -1,14 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { socket } from '../socket';
-import { Send, ArrowLeft, Video, Phone } from 'lucide-react';
+import { Send, ArrowLeft, Video, Phone, Users } from 'lucide-react';
 
 const PrivateChat = ({ username }) => {
   const [onlineUsers, setOnlineUsers] = useState([]);
-  const [allUsers, setAllUsers] = useState([]); // List of all registered users
-  const [selectedUser, setSelectedUser] = useState(null); // username string
-  const [messages, setMessages] = useState({}); // { [username]: [{from, content}] }
+  const [allUsers, setAllUsers] = useState([]);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [messages, setMessages] = useState({});
   const [inputValue, setInputValue] = useState('');
+  const [showSidebar, setShowSidebar] = useState(true);
   const navigate = useNavigate();
   const messagesEndRef = useRef(null);
 
@@ -41,13 +42,11 @@ const PrivateChat = ({ username }) => {
     const handleChatHistory = (historyArr) => {
       const privateMsgs = historyArr.filter(msg => msg.type === 'private');
       const newMessages = {};
-
       privateMsgs.forEach(msg => {
         const otherUser = msg.from === username ? msg.to : msg.from;
         if (!newMessages[otherUser]) newMessages[otherUser] = [];
         newMessages[otherUser].push({ from: msg.from, content: msg.content, isMe: msg.from === username, timestamp: msg.timestamp });
       });
-
       setMessages(newMessages);
     };
 
@@ -56,7 +55,6 @@ const PrivateChat = ({ username }) => {
     socket.on('private_message', handlePrivateMessage);
     socket.on('chat_history', handleChatHistory);
 
-    // Auto-login on refresh using cached username
     if (socket.connected) {
       socket.emit('login', { username });
     } else {
@@ -64,7 +62,7 @@ const PrivateChat = ({ username }) => {
         socket.emit('login', { username });
       });
     }
-    
+
     return () => {
       socket.off('online_users', handleOnlineUsers);
       socket.off('all_users', handleAllUsers);
@@ -88,7 +86,6 @@ const PrivateChat = ({ username }) => {
           [selectedUser]: [...chatHistory, { from: username, content: inputValue, isMe: true, timestamp }]
         };
       });
-
       socket.emit('private_message', { to: selectedUser, from: username, content: inputValue });
       setInputValue('');
     }
@@ -100,10 +97,19 @@ const PrivateChat = ({ username }) => {
     window.dispatchEvent(event);
   };
 
+  const selectUser = (name) => {
+    setSelectedUser(name);
+    setShowSidebar(false);
+  };
+
+  const goBackToSidebar = () => {
+    setShowSidebar(true);
+  };
+
   return (
     <div className="chat-layout">
       {/* Sidebar */}
-      <div className="sidebar">
+      <div className={`sidebar ${showSidebar ? 'sidebar-visible' : 'sidebar-hidden'}`}>
         <div className="sidebar-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <button className="btn-icon" onClick={() => navigate('/')}><ArrowLeft /></button>
@@ -124,7 +130,7 @@ const PrivateChat = ({ username }) => {
                 <div 
                   key={name} 
                   className={`user-item ${selectedUser === name ? 'active' : ''}`}
-                  onClick={() => setSelectedUser(name)}
+                  onClick={() => selectUser(name)}
                 >
                   <div className="user-avatar" style={{ position: 'relative' }}>
                     {name.charAt(0).toUpperCase()}
@@ -142,11 +148,12 @@ const PrivateChat = ({ username }) => {
       </div>
 
       {/* Chat Area */}
-      <div className="chat-area">
+      <div className={`chat-area ${!showSidebar ? 'chat-visible' : 'chat-hidden'}`}>
         {selectedUser ? (
           <>
             <div className="chat-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <button className="btn-icon mobile-back-btn" onClick={goBackToSidebar}><ArrowLeft size={20} /></button>
                 <div className="user-avatar" style={{ width: '36px', height: '36px' }}>
                   {selectedUser.charAt(0).toUpperCase()}
                 </div>
@@ -180,7 +187,8 @@ const PrivateChat = ({ username }) => {
             </form>
           </>
         ) : (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', flexDirection: 'column', gap: '10px' }}>
+          <div className="empty-chat-placeholder">
+            <Users size={48} style={{ opacity: 0.5 }} />
             <h3>Welcome to Private Chat</h3>
             <p>Select any registered user from the sidebar to start chatting!</p>
           </div>
