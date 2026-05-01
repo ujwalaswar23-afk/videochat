@@ -55,21 +55,34 @@ const PrivateChat = ({ username }) => {
     socket.on('private_message', handlePrivateMessage);
     socket.on('chat_history', handleChatHistory);
 
-    if (socket.connected) {
+    const requestData = () => {
       socket.emit('login', { username });
       socket.emit('get_all_users');
+    };
+
+    if (socket.connected) {
+      requestData();
     } else {
-      socket.once('connect', () => {
-        socket.emit('login', { username });
-        socket.emit('get_all_users');
-      });
+      socket.once('connect', requestData);
     }
+
+    // Retry after 1 second to catch any race conditions
+    const retryTimeout = setTimeout(() => {
+      if (socket.connected) socket.emit('get_all_users');
+    }, 1000);
+
+    // Refresh online status every 5 seconds
+    const refreshInterval = setInterval(() => {
+      if (socket.connected) socket.emit('get_all_users');
+    }, 5000);
 
     return () => {
       socket.off('online_users', handleOnlineUsers);
       socket.off('all_users', handleAllUsers);
       socket.off('private_message', handlePrivateMessage);
       socket.off('chat_history', handleChatHistory);
+      clearTimeout(retryTimeout);
+      clearInterval(refreshInterval);
     };
   }, [username, navigate]);
 
