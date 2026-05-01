@@ -76,7 +76,7 @@ const WorldChat = ({ username }) => {
               <div key={idx} className={`message-wrapper ${isMe ? 'sent' : 'received'} animate-fade-in`}>
                 {!isMe && <div className="message-sender">{msg.sender}</div>}
                 <div className="message-bubble">
-                  {msg.type === 'text' ? (
+                  {(msg.msgType === 'text' || msg.type === 'text') ? (
                     msg.content
                   ) : (
                     <img src={msg.content} alt="Shared" style={{ maxWidth: '300px', borderRadius: '8px' }} />
