@@ -5,7 +5,7 @@ import { Send, ArrowLeft, Video, Phone } from 'lucide-react';
 
 const PrivateChat = ({ username }) => {
   const [onlineUsers, setOnlineUsers] = useState([]);
-  const [historyUsers, setHistoryUsers] = useState(new Set()); // Users we have chat history with
+  const [allUsers, setAllUsers] = useState([]); // List of all registered users
   const [selectedUser, setSelectedUser] = useState(null); // username string
   const [messages, setMessages] = useState({}); // { [username]: [{from, content}] }
   const [inputValue, setInputValue] = useState('');
@@ -19,61 +19,55 @@ const PrivateChat = ({ username }) => {
     }
 
     const handleOnlineUsers = (users) => {
-      // users is an array of usernames
       setOnlineUsers(users.filter(name => name !== username));
     };
 
+    const handleAllUsers = (users) => {
+      setAllUsers(users.filter(name => name !== username));
+    };
+
     const handlePrivateMessage = (msg) => {
-      // msg: { from: username, to: username, content: string, timestamp: number }
       setMessages((prev) => {
         const otherUser = msg.from === username ? msg.to : msg.from;
         const chatHistory = prev[otherUser] || [];
-        
-        // Check if message already exists (prevent duplicate on optimistic update)
         if (chatHistory.some(m => m.timestamp === msg.timestamp)) return prev;
-
         return {
           ...prev,
           [otherUser]: [...chatHistory, { from: msg.from, content: msg.content, isMe: msg.from === username, timestamp: msg.timestamp }]
         };
-      });
-
-      setHistoryUsers(prev => {
-        const otherUser = msg.from === username ? msg.to : msg.from;
-        if (!prev.has(otherUser)) {
-          return new Set(prev).add(otherUser);
-        }
-        return prev;
       });
     };
 
     const handleChatHistory = (historyArr) => {
       const privateMsgs = historyArr.filter(msg => msg.type === 'private');
       const newMessages = {};
-      const newHistoryUsers = new Set();
 
       privateMsgs.forEach(msg => {
         const otherUser = msg.from === username ? msg.to : msg.from;
         if (!newMessages[otherUser]) newMessages[otherUser] = [];
         newMessages[otherUser].push({ from: msg.from, content: msg.content, isMe: msg.from === username, timestamp: msg.timestamp });
-        newHistoryUsers.add(otherUser);
       });
 
       setMessages(newMessages);
-      setHistoryUsers(newHistoryUsers);
     };
 
     socket.on('online_users', handleOnlineUsers);
+    socket.on('all_users', handleAllUsers);
     socket.on('private_message', handlePrivateMessage);
     socket.on('chat_history', handleChatHistory);
 
-    // Request login/history again if component remounts while connected
+    // Auto-login on refresh using cached username
     if (socket.connected) {
-      socket.emit('login', username);
+      socket.emit('login', { username });
+    } else {
+      socket.once('connect', () => {
+        socket.emit('login', { username });
+      });
     }
-
+    
     return () => {
       socket.off('online_users', handleOnlineUsers);
+      socket.off('all_users', handleAllUsers);
       socket.off('private_message', handlePrivateMessage);
       socket.off('chat_history', handleChatHistory);
     };
@@ -87,20 +81,12 @@ const PrivateChat = ({ username }) => {
     e.preventDefault();
     if (inputValue.trim() && selectedUser) {
       const timestamp = Date.now();
-      // Optimistic update
       setMessages((prev) => {
         const chatHistory = prev[selectedUser] || [];
         return {
           ...prev,
           [selectedUser]: [...chatHistory, { from: username, content: inputValue, isMe: true, timestamp }]
         };
-      });
-
-      setHistoryUsers(prev => {
-        if (!prev.has(selectedUser)) {
-          return new Set(prev).add(selectedUser);
-        }
-        return prev;
       });
 
       socket.emit('private_message', { to: selectedUser, from: username, content: inputValue });
@@ -114,9 +100,6 @@ const PrivateChat = ({ username }) => {
     window.dispatchEvent(event);
   };
 
-  // Combine online users and users we have history with
-  const allSidebarUsers = Array.from(new Set([...onlineUsers, ...Array.from(historyUsers)])).filter(name => name !== username);
-
   return (
     <div className="chat-layout">
       {/* Sidebar */}
@@ -124,7 +107,7 @@ const PrivateChat = ({ username }) => {
         <div className="sidebar-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <button className="btn-icon" onClick={() => navigate('/')}><ArrowLeft /></button>
-            <h3>Chats</h3>
+            <h3>All Users</h3>
           </div>
           <div style={{ marginTop: '10px', fontSize: '0.9rem', color: 'var(--text-muted)' }}>
             Logged in as {username}
@@ -132,10 +115,10 @@ const PrivateChat = ({ username }) => {
         </div>
 
         <div className="user-list">
-          {allSidebarUsers.length === 0 ? (
-            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '20px' }}>No chats yet.</div>
+          {allUsers.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '20px' }}>No other registered users yet.</div>
           ) : (
-            allSidebarUsers.map((name) => {
+            allUsers.map((name) => {
               const isOnline = onlineUsers.includes(name);
               return (
                 <div 
@@ -147,7 +130,10 @@ const PrivateChat = ({ username }) => {
                     {name.charAt(0).toUpperCase()}
                     {isOnline && <div style={{ position: 'absolute', bottom: 0, right: 0, width: '10px', height: '10px', background: 'var(--accent-success)', borderRadius: '50%', border: '2px solid var(--bg-panel)' }}></div>}
                   </div>
-                  <div>{name}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 'bold' }}>{name}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{isOnline ? 'Online' : 'Offline'}</div>
+                  </div>
                 </div>
               );
             })
@@ -194,8 +180,9 @@ const PrivateChat = ({ username }) => {
             </form>
           </>
         ) : (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)' }}>
-            Select a user to start chatting
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', flexDirection: 'column', gap: '10px' }}>
+            <h3>Welcome to Private Chat</h3>
+            <p>Select any registered user from the sidebar to start chatting!</p>
           </div>
         )}
       </div>

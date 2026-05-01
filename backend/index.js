@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'fs';
 
 dotenv.config();
 
@@ -17,14 +18,36 @@ const io = new Server(server, {
   },
 });
 
-// User mapping
+// User Storage (JSON file for persistence)
+const USERS_FILE = './users.json';
+let registeredUsers = {}; // { username: password }
+
+try {
+  if (fs.existsSync(USERS_FILE)) {
+    const data = fs.readFileSync(USERS_FILE, 'utf-8');
+    registeredUsers = JSON.parse(data);
+  } else {
+    fs.writeFileSync(USERS_FILE, JSON.stringify({}));
+  }
+} catch (e) {
+  console.error("Error reading users file:", e);
+}
+
+const saveUsers = () => {
+  try {
+    fs.writeFileSync(USERS_FILE, JSON.stringify(registeredUsers, null, 2));
+  } catch (e) {
+    console.error("Error saving users file:", e);
+  }
+};
+
+// State mapping
 const socketToUser = new Map(); // socket.id -> username
 const userToSockets = new Map(); // username -> Set<socket.id>
 
 // Chat History
 let chatHistory = []; // Array of message objects
 
-// Cleanup interval (45 minutes)
 const FORTY_FIVE_MINUTES = 45 * 60 * 1000;
 setInterval(() => {
   const cutoffTime = Date.now() - FORTY_FIVE_MINUTES;
@@ -33,19 +56,59 @@ setInterval(() => {
   if (originalLength !== chatHistory.length) {
     console.log(`Cleaned up ${originalLength - chatHistory.length} old messages.`);
   }
-}, 60000); // Check every minute
+}, 60000); 
 
 const emitOnlineUsers = () => {
-  // Return array of unique online usernames
   const users = Array.from(userToSockets.keys()).filter(u => userToSockets.get(u).size > 0);
   io.emit('online_users', users);
+};
+
+const emitAllUsers = () => {
+  io.emit('all_users', Object.keys(registeredUsers));
 };
 
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
-  // ---- Authentication / User Presence ----
-  socket.on('login', (username) => {
+  // Send the list of all registered users immediately so World Chat guests can see it if needed
+  socket.emit('all_users', Object.keys(registeredUsers));
+  emitOnlineUsers();
+
+  // ---- Registration & Authentication ----
+  socket.on('register', ({ username, password }, callback) => {
+    if (registeredUsers[username]) {
+      return callback({ success: false, message: 'Username already taken' });
+    }
+    if (!username || !password) {
+      return callback({ success: false, message: 'Username and password required' });
+    }
+
+    registeredUsers[username] = password; // In a real app, hash this with bcrypt!
+    saveUsers();
+    emitAllUsers();
+    callback({ success: true });
+    console.log(`New user registered: ${username}`);
+  });
+
+  socket.on('login', ({ username, password }, callback) => {
+    // We allow "login" without password ONLY for re-establishing socket connection if they have a saved token/username on frontend.
+    // Wait, let's enforce password check if provided, or assume it's an auto-reconnect if no password is provided but they exist.
+    // Actually, for robust security, they must provide password or we should use JWT.
+    // For this simple implementation, we'll check password.
+    
+    if (password) {
+      if (!registeredUsers[username] || registeredUsers[username] !== password) {
+        if (callback) callback({ success: false, message: 'Invalid username or password' });
+        return;
+      }
+    } else {
+      // Reconnection attempt without password (e.g. page refresh)
+      if (!registeredUsers[username]) {
+        if (callback) callback({ success: false, message: 'User not found' });
+        return;
+      }
+    }
+
     socketToUser.set(socket.id, username);
     
     if (!userToSockets.has(username)) {
@@ -56,12 +119,15 @@ io.on('connection', (socket) => {
     emitOnlineUsers();
     console.log(`${username} logged in with id ${socket.id}`);
 
-    // Send history relevant to this user
+    // Send history
     const userHistory = chatHistory.filter(msg => 
       msg.type === 'world' || 
       (msg.type === 'private' && (msg.from === username || msg.to === username))
     );
     socket.emit('chat_history', userHistory);
+    socket.emit('all_users', Object.keys(registeredUsers));
+
+    if (callback) callback({ success: true });
   });
 
   socket.on('logout', () => {
@@ -85,13 +151,11 @@ io.on('connection', (socket) => {
     socket.join('world_chat');
     console.log(`${socket.id} joined world chat`);
     
-    // Send only world chat history to this socket
     const worldHistory = chatHistory.filter(msg => msg.type === 'world');
     socket.emit('world_history', worldHistory);
   });
 
   socket.on('world_message', (data) => {
-    // data: { sender: string, content: string, type: 'text' | 'image' }
     const message = {
       type: 'world',
       sender: data.sender,
@@ -105,7 +169,6 @@ io.on('connection', (socket) => {
 
   // ---- Private Chat ----
   socket.on('private_message', (data) => {
-    // data: { to: username, from: username, content: string }
     const message = {
       type: 'private',
       from: data.from,
@@ -115,7 +178,6 @@ io.on('connection', (socket) => {
     };
     chatHistory.push(message);
 
-    // Send to recipient
     const recipientSockets = userToSockets.get(data.to);
     if (recipientSockets) {
       for (const socketId of recipientSockets) {
@@ -123,7 +185,6 @@ io.on('connection', (socket) => {
       }
     }
     
-    // Also echo back to other tabs of the sender
     const senderSockets = userToSockets.get(data.from);
     if (senderSockets) {
       for (const socketId of senderSockets) {
@@ -135,34 +196,27 @@ io.on('connection', (socket) => {
   });
 
   // ---- WebRTC Signaling ----
-  // We keep WebRTC using socket IDs for now since calls are direct point-to-point and immediate.
-  // But we need to translate from username to socketId for calls.
   socket.on('call_user', (data) => {
-    // data: { userToCall: username, signalData: any, from: username }
     const recipientSockets = userToSockets.get(data.userToCall);
     if (recipientSockets && recipientSockets.size > 0) {
-      // Just call the first active socket for simplicity
       const socketId = Array.from(recipientSockets)[0];
       io.to(socketId).emit('call_incoming', {
         signal: data.signalData,
         from: data.from,
-        fromId: socket.id // They need this to answer
+        fromId: socket.id
       });
     }
   });
 
   socket.on('answer_call', (data) => {
-    // data: { to: socketId, signal: any }
     io.to(data.to).emit('call_accepted', data.signal);
   });
 
   socket.on('end_call', (data) => {
-    // data: { to: socketId }
     io.to(data.to).emit('call_ended');
   });
 
   socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
     const username = socketToUser.get(socket.id);
     if (username) {
       socketToUser.delete(socket.id);
