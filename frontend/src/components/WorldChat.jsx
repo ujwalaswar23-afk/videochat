@@ -13,13 +13,23 @@ const WorldChat = ({ username }) => {
     socket.emit('join_world');
 
     const handleMessage = (data) => {
-      setMessages((prev) => [...prev, data]);
+      setMessages((prev) => {
+        // Prevent duplicate if we already have it
+        if (prev.some(m => m.timestamp === data.timestamp)) return prev;
+        return [...prev, data];
+      });
+    };
+
+    const handleHistory = (historyArr) => {
+      setMessages(historyArr);
     };
 
     socket.on('world_message', handleMessage);
+    socket.on('world_history', handleHistory);
 
     return () => {
       socket.off('world_message', handleMessage);
+      socket.off('world_history', handleHistory);
     };
   }, []);
 

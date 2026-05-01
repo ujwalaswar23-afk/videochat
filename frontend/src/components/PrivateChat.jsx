@@ -5,8 +5,9 @@ import { Send, ArrowLeft, Video, Phone } from 'lucide-react';
 
 const PrivateChat = ({ username }) => {
   const [onlineUsers, setOnlineUsers] = useState([]);
-  const [selectedUser, setSelectedUser] = useState(null); // { id, username }
-  const [messages, setMessages] = useState({}); // { [userId]: [{from, content}] }
+  const [historyUsers, setHistoryUsers] = useState(new Set()); // Users we have chat history with
+  const [selectedUser, setSelectedUser] = useState(null); // username string
+  const [messages, setMessages] = useState({}); // { [username]: [{from, content}] }
   const [inputValue, setInputValue] = useState('');
   const navigate = useNavigate();
   const messagesEndRef = useRef(null);
@@ -18,27 +19,63 @@ const PrivateChat = ({ username }) => {
     }
 
     const handleOnlineUsers = (users) => {
-      // users is an array of [socketId, username]
-      setOnlineUsers(users.filter(([id, name]) => id !== socket.id));
+      // users is an array of usernames
+      setOnlineUsers(users.filter(name => name !== username));
     };
 
-    const handlePrivateMessage = (data) => {
-      // data: { from: username, content: string, fromId: socketId }
+    const handlePrivateMessage = (msg) => {
+      // msg: { from: username, to: username, content: string, timestamp: number }
       setMessages((prev) => {
-        const chatHistory = prev[data.fromId] || [];
+        const otherUser = msg.from === username ? msg.to : msg.from;
+        const chatHistory = prev[otherUser] || [];
+        
+        // Check if message already exists (prevent duplicate on optimistic update)
+        if (chatHistory.some(m => m.timestamp === msg.timestamp)) return prev;
+
         return {
           ...prev,
-          [data.fromId]: [...chatHistory, { from: data.from, content: data.content, isMe: false }]
+          [otherUser]: [...chatHistory, { from: msg.from, content: msg.content, isMe: msg.from === username, timestamp: msg.timestamp }]
         };
       });
+
+      setHistoryUsers(prev => {
+        const otherUser = msg.from === username ? msg.to : msg.from;
+        if (!prev.has(otherUser)) {
+          return new Set(prev).add(otherUser);
+        }
+        return prev;
+      });
+    };
+
+    const handleChatHistory = (historyArr) => {
+      const privateMsgs = historyArr.filter(msg => msg.type === 'private');
+      const newMessages = {};
+      const newHistoryUsers = new Set();
+
+      privateMsgs.forEach(msg => {
+        const otherUser = msg.from === username ? msg.to : msg.from;
+        if (!newMessages[otherUser]) newMessages[otherUser] = [];
+        newMessages[otherUser].push({ from: msg.from, content: msg.content, isMe: msg.from === username, timestamp: msg.timestamp });
+        newHistoryUsers.add(otherUser);
+      });
+
+      setMessages(newMessages);
+      setHistoryUsers(newHistoryUsers);
     };
 
     socket.on('online_users', handleOnlineUsers);
     socket.on('private_message', handlePrivateMessage);
+    socket.on('chat_history', handleChatHistory);
+
+    // Request login/history again if component remounts while connected
+    if (socket.connected) {
+      socket.emit('login', username);
+    }
 
     return () => {
       socket.off('online_users', handleOnlineUsers);
       socket.off('private_message', handlePrivateMessage);
+      socket.off('chat_history', handleChatHistory);
     };
   }, [username, navigate]);
 
@@ -49,27 +86,36 @@ const PrivateChat = ({ username }) => {
   const sendMessage = (e) => {
     e.preventDefault();
     if (inputValue.trim() && selectedUser) {
-      // Optistic update
+      const timestamp = Date.now();
+      // Optimistic update
       setMessages((prev) => {
-        const chatHistory = prev[selectedUser.id] || [];
+        const chatHistory = prev[selectedUser] || [];
         return {
           ...prev,
-          [selectedUser.id]: [...chatHistory, { from: username, content: inputValue, isMe: true }]
+          [selectedUser]: [...chatHistory, { from: username, content: inputValue, isMe: true, timestamp }]
         };
       });
 
-      socket.emit('private_message', { to: selectedUser.id, from: username, content: inputValue });
+      setHistoryUsers(prev => {
+        if (!prev.has(selectedUser)) {
+          return new Set(prev).add(selectedUser);
+        }
+        return prev;
+      });
+
+      socket.emit('private_message', { to: selectedUser, from: username, content: inputValue });
       setInputValue('');
     }
   };
 
   const startCall = (type) => {
     if (!selectedUser) return;
-    // Emit a custom event that VideoCall component will listen to or handle state
-    // We can just emit via document event to trigger the VideoCall component
-    const event = new CustomEvent('initiate_call', { detail: { userToCall: selectedUser.id, name: selectedUser.username, type } });
+    const event = new CustomEvent('initiate_call', { detail: { userToCall: selectedUser, name: selectedUser, type } });
     window.dispatchEvent(event);
   };
+
+  // Combine online users and users we have history with
+  const allSidebarUsers = Array.from(new Set([...onlineUsers, ...Array.from(historyUsers)])).filter(name => name !== username);
 
   return (
     <div className="chat-layout">
@@ -86,19 +132,25 @@ const PrivateChat = ({ username }) => {
         </div>
 
         <div className="user-list">
-          {onlineUsers.length === 0 ? (
-            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '20px' }}>No one is online right now.</div>
+          {allSidebarUsers.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '20px' }}>No chats yet.</div>
           ) : (
-            onlineUsers.map(([id, name]) => (
-              <div 
-                key={id} 
-                className={`user-item ${selectedUser?.id === id ? 'active' : ''}`}
-                onClick={() => setSelectedUser({ id, username: name })}
-              >
-                <div className="user-avatar">{name.charAt(0).toUpperCase()}</div>
-                <div>{name}</div>
-              </div>
-            ))
+            allSidebarUsers.map((name) => {
+              const isOnline = onlineUsers.includes(name);
+              return (
+                <div 
+                  key={name} 
+                  className={`user-item ${selectedUser === name ? 'active' : ''}`}
+                  onClick={() => setSelectedUser(name)}
+                >
+                  <div className="user-avatar" style={{ position: 'relative' }}>
+                    {name.charAt(0).toUpperCase()}
+                    {isOnline && <div style={{ position: 'absolute', bottom: 0, right: 0, width: '10px', height: '10px', background: 'var(--accent-success)', borderRadius: '50%', border: '2px solid var(--bg-panel)' }}></div>}
+                  </div>
+                  <div>{name}</div>
+                </div>
+              );
+            })
           )}
         </div>
       </div>
@@ -110,18 +162,19 @@ const PrivateChat = ({ username }) => {
             <div className="chat-header">
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <div className="user-avatar" style={{ width: '36px', height: '36px' }}>
-                  {selectedUser.username.charAt(0).toUpperCase()}
+                  {selectedUser.charAt(0).toUpperCase()}
                 </div>
-                <h3>{selectedUser.username}</h3>
+                <h3>{selectedUser}</h3>
+                {!onlineUsers.includes(selectedUser) && <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>(Offline)</span>}
               </div>
               <div style={{ display: 'flex', gap: '12px' }}>
-                <button className="btn-icon" onClick={() => startCall('audio')} title="Voice Call"><Phone size={20} /></button>
-                <button className="btn-icon" onClick={() => startCall('video')} title="Video Call"><Video size={20} /></button>
+                <button className="btn-icon" onClick={() => startCall('audio')} title="Voice Call" disabled={!onlineUsers.includes(selectedUser)} style={{ opacity: onlineUsers.includes(selectedUser) ? 1 : 0.5 }}><Phone size={20} /></button>
+                <button className="btn-icon" onClick={() => startCall('video')} title="Video Call" disabled={!onlineUsers.includes(selectedUser)} style={{ opacity: onlineUsers.includes(selectedUser) ? 1 : 0.5 }}><Video size={20} /></button>
               </div>
             </div>
 
             <div className="chat-messages">
-              {(messages[selectedUser.id] || []).map((msg, idx) => (
+              {(messages[selectedUser] || []).map((msg, idx) => (
                 <div key={idx} className={`message-wrapper ${msg.isMe ? 'sent' : 'received'} animate-fade-in`}>
                   <div className="message-bubble">{msg.content}</div>
                 </div>
