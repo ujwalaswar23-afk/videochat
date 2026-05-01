@@ -126,25 +126,57 @@ const PrivateChat = ({ username }) => {
           {allUsers.length === 0 ? (
             <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '20px' }}>No other registered users yet.</div>
           ) : (
-            allUsers.map((name) => {
-              const isOnline = onlineUsers.includes(name);
-              return (
-                <div 
-                  key={name} 
-                  className={`user-item ${selectedUser === name ? 'active' : ''}`}
-                  onClick={() => selectUser(name)}
-                >
-                  <div className="user-avatar" style={{ position: 'relative' }}>
-                    {name.charAt(0).toUpperCase()}
-                    {isOnline && <div style={{ position: 'absolute', bottom: 0, right: 0, width: '10px', height: '10px', background: 'var(--accent-success)', borderRadius: '50%', border: '2px solid var(--bg-panel)' }}></div>}
+            <>
+              {/* Online Users Section */}
+              {onlineUsers.length > 0 && (
+                <>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--accent-success)', textTransform: 'uppercase', letterSpacing: '1px', padding: '8px 12px' }}>
+                    Online — {onlineUsers.length}
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 'bold' }}>{name}</div>
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{isOnline ? 'Online' : 'Offline'}</div>
+                  {onlineUsers.map((name) => (
+                    <div 
+                      key={name} 
+                      className={`user-item ${selectedUser === name ? 'active' : ''}`}
+                      onClick={() => selectUser(name)}
+                    >
+                      <div className="user-avatar" style={{ position: 'relative' }}>
+                        {name.charAt(0).toUpperCase()}
+                        <div style={{ position: 'absolute', bottom: 0, right: 0, width: '10px', height: '10px', background: 'var(--accent-success)', borderRadius: '50%', border: '2px solid var(--bg-panel)' }}></div>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 'bold' }}>{name}</div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--accent-success)' }}>Online</div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+
+              {/* Offline Users Section */}
+              {allUsers.filter(n => !onlineUsers.includes(n)).length > 0 && (
+                <>
+                  <div style={{ fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px', padding: '8px 12px', marginTop: onlineUsers.length > 0 ? '12px' : '0' }}>
+                    Offline — {allUsers.filter(n => !onlineUsers.includes(n)).length}
                   </div>
-                </div>
-              );
-            })
+                  {allUsers.filter(n => !onlineUsers.includes(n)).map((name) => (
+                    <div 
+                      key={name} 
+                      className={`user-item ${selectedUser === name ? 'active' : ''}`}
+                      onClick={() => selectUser(name)}
+                      style={{ opacity: 0.6 }}
+                    >
+                      <div className="user-avatar" style={{ position: 'relative', background: 'rgba(255,255,255,0.15)' }}>
+                        {name.charAt(0).toUpperCase()}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 'bold' }}>{name}</div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Offline</div>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </>
           )}
         </div>
       </div>
